@@ -1,123 +1,143 @@
-"""AI service for LeetCode assistance using OpenAI."""
+"""ReAct agent for LeetCode assistance using OpenAI tool-calling."""
 
 import json
-import re
+import logging
+from dataclasses import dataclass, field
 from typing import Optional
 
 from openai import AsyncOpenAI
-from services.leetcode import LeetCodeService
+
+from services.tools import ToolExecutor
+
+logger = logging.getLogger("leetbot.agent")
+
+SYSTEM_PROMPT = """\
+You are a helpful LeetCode study assistant in a Discord server.
+
+You can look up problems, search by topic, fetch daily challenges, check user stats, \
+and access study plan data using the tools provided. Always use tools to retrieve \
+real data rather than guessing or fabricating problem details.
+
+Guidelines:
+- Be concise and educational. Discord messages have a 2000-char limit.
+- When listing problems, include the title, difficulty, and URL.
+- When explaining concepts, use clear examples and mention time/space complexity.
+- If the user asks about a specific problem, fetch it first with get_problem.
+- Format your response using Markdown (bold, bullet points, code blocks) for readability in Discord.
+"""
 
 
-class AIService:
-    """Service for LLM-powered LeetCode assistance."""
+@dataclass
+class AgentResult:
+    """Result from a ReAct agent run."""
 
-    def __init__(self, api_key: str, leetcode: LeetCodeService):
+    answer: str
+    tool_calls_made: list[dict] = field(default_factory=list)
+    iterations: int = 0
+
+
+class ReActAgent:
+    """ReAct agent that reasons and acts using OpenAI tool-calling."""
+
+    def __init__(
+        self,
+        api_key: str,
+        tool_executor: ToolExecutor,
+        model: str = "gpt-4o-mini",
+        max_iterations: int = 8,
+    ):
         self.client = AsyncOpenAI(api_key=api_key) if api_key else None
-        self.leetcode = leetcode
+        self.executor = tool_executor
+        self.model = model
+        self.max_iterations = max_iterations
 
     def is_available(self) -> bool:
-        """Check if AI features are available."""
         return self.client is not None
 
-    async def ask(self, question: str, problem_context: Optional[str] = None) -> str:
-        """Answer a LeetCode-related question."""
+    async def run(
+        self,
+        user_message: str,
+        context: Optional[str] = None,
+        discord_id: Optional[int] = None,
+    ) -> AgentResult:
+        """
+        Execute the ReAct loop:
+        1. Build messages (system + context + user)
+        2. Call LLM with tool definitions
+        3. If tool_calls → execute, append results, repeat
+        4. If text only → return final answer
+        5. Stop after max_iterations
+        """
         if not self.client:
-            return "AI is not configured. Set OPENAI_API_KEY in your .env file."
-
-        system = """You are a helpful LeetCode study assistant. You explain algorithms, data structures,
-solution approaches, and coding concepts clearly. Be concise and educational.
-If the user asks about a specific problem, use the problem context if provided."""
-        messages = [{"role": "system", "content": system}]
-        if problem_context:
-            messages.append({"role": "user", "content": f"Problem context:\n{problem_context}\n\nUser question: {question}"})
-        else:
-            messages.append({"role": "user", "content": question})
-
-        try:
-            resp = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                max_tokens=1500,
+            return AgentResult(
+                answer="AI is not configured. Set OPENAI_API_KEY in your .env file."
             )
-            return resp.choices[0].message.content or "No response."
-        except Exception as e:
-            return f"AI error: {str(e)}"
 
-    async def search_problems(self, query: str) -> tuple[Optional[str], Optional[str], list[dict]]:
-        """
-        Parse natural language query into difficulty and tags, then fetch problems.
-        Returns (difficulty, tag_slug, problems).
-        """
-        difficulty = None
-        tag_slug = None
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        if self.client:
+        user_content = user_message
+        if context:
+            user_content = f"{context}\n\n{user_message}"
+        if discord_id is not None:
+            user_content += f"\n\n[Discord user ID for study plan lookups: {discord_id}]"
+
+        messages.append({"role": "user", "content": user_content})
+
+        tools = self.executor.get_tool_definitions()
+        tool_calls_log: list[dict] = []
+
+        for iteration in range(1, self.max_iterations + 1):
             try:
                 resp = await self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": """Extract LeetCode search filters from the user's natural language.
-Reply with ONLY a JSON object: {"difficulty": "Easy"|"Medium"|"Hard"|null, "tag": "slug"|null}
-Tag must be a LeetCode topic slug (e.g. dynamic-programming, two-pointers, array).
-Use null for any unspecified filter."""},
-                        {"role": "user", "content": query},
-                    ],
-                    max_tokens=100,
+                    model=self.model,
+                    messages=messages,
+                    tools=tools,
+                    max_tokens=1500,
                 )
-                text = resp.choices[0].message.content or "{}"
-                match = re.search(r"\{[^}]+\}", text)
-                if match:
-                    data = json.loads(match.group())
-                    difficulty = data.get("difficulty")
-                    tag_slug = data.get("tag")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"LLM call failed on iteration {iteration}: {e}")
+                return AgentResult(
+                    answer=f"AI error: {e}",
+                    tool_calls_made=tool_calls_log,
+                    iterations=iteration,
+                )
 
-        if tag_slug:
-            problems = await self.leetcode.get_problems_by_tag(tag_slug, limit=50)
-            if difficulty:
-                problems = [p for p in problems if p.get("difficulty") == difficulty]
-        else:
-            problems = await self.leetcode.get_problems(limit=200, difficulty=difficulty)
+            choice = resp.choices[0]
 
-        return (difficulty, tag_slug, problems)
+            if choice.finish_reason == "stop" or not choice.message.tool_calls:
+                answer = choice.message.content or "I couldn't generate a response."
+                return AgentResult(
+                    answer=answer,
+                    tool_calls_made=tool_calls_log,
+                    iterations=iteration,
+                )
 
-    async def generate_suggestion(
-        self,
-        topic: Optional[str] = None,
-        difficulty: Optional[str] = None,
-    ) -> str:
-        """Generate a practice problem suggestion or idea."""
-        if not self.client:
-            return "AI is not configured. Set OPENAI_API_KEY in your .env file."
+            messages.append(choice.message)
 
-        problems = await self.leetcode.get_problems(limit=100, difficulty=difficulty)
-        if topic:
-            tag_problems = await self.leetcode.get_problems_by_tag(topic.replace(" ", "-"), limit=50)
-            if tag_problems:
-                problems = [p for p in tag_problems if not difficulty or p.get("difficulty") == difficulty]
-                if not problems:
-                    problems = tag_problems
+            for tool_call in choice.message.tool_calls:
+                fn_name = tool_call.function.name
+                try:
+                    fn_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    fn_args = {}
 
-        if not problems:
-            return "No problems found matching your criteria."
+                logger.info(f"Tool call [{iteration}]: {fn_name}({fn_args})")
+                result = await self.executor.execute(fn_name, fn_args)
 
-        import random
-        chosen = random.choice(problems[: min(20, len(problems))])
-        title = chosen.get("title", "Unknown")
-        slug = chosen.get("title_slug", chosen.get("titleSlug", ""))
-        diff = chosen.get("difficulty", "Unknown")
-        url = chosen.get("url", f"https://leetcode.com/problems/{slug}/")
+                tool_calls_log.append({
+                    "tool": fn_name,
+                    "args": fn_args,
+                    "iteration": iteration,
+                })
 
-        prompt = f"""Suggest the LeetCode problem: {title} ({diff}).
-Why it's good for practice, key concepts to focus on, and a brief hint (don't give the solution)."""
-        try:
-            resp = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=400,
-            )
-            text = resp.choices[0].message.content or ""
-            return f"**{title}** ({diff})\n{url}\n\n{text}"
-        except Exception as e:
-            return f"**{title}** ({diff})\n{url}\n\n*Could not generate AI suggestion: {e}*"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+        return AgentResult(
+            answer="I ran out of steps trying to answer. Please try a simpler question.",
+            tool_calls_made=tool_calls_log,
+            iterations=self.max_iterations,
+        )

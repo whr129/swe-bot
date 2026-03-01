@@ -11,3 +11,6 @@ LEETCODE_API_BASE = os.getenv("LEETCODE_API_BASE", "https://leetcode-api-pied.ve
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 # Set to empty or "false" to run without PostgreSQL (study commands disabled)
 DATABASE_ENABLED = DATABASE_URL and DATABASE_URL.strip() not in ("", "false", "0")
+
+AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
+AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "8"))
