@@ -1,4 +1,4 @@
-"""AI cog: /ask command with multi-agent routing."""
+"""AI cog: /ask command with multi-agent orchestration."""
 
 import discord
 from discord.ext import commands
@@ -14,13 +14,13 @@ AGENT_COLORS = {
 
 
 class AICog(commands.Cog):
-    """AI-powered assistance via multi-agent routing."""
+    """AI-powered assistance via multi-agent orchestration."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    def _get_router(self):
-        return getattr(self.bot, "agent_router", None)
+    def _get_orchestrator(self):
+        return getattr(self.bot, "orchestrator", None)
 
     @discord.slash_command(
         name="ask",
@@ -33,12 +33,12 @@ class AICog(commands.Cog):
     ) -> None:
         await ctx.defer()
 
-        router = self._get_router()
-        if not router or not router.is_available():
+        orchestrator = self._get_orchestrator()
+        if not orchestrator or not orchestrator.is_available():
             await ctx.respond(embed=error_embed("AI is not configured. Set OPENAI_API_KEY in .env"))
             return
 
-        result = await router.run(query=question, discord_id=ctx.author.id)
+        result = await orchestrator.run(query=question, discord_id=ctx.author.id)
 
         answer = result.answer
         if len(answer) > 1900:
@@ -50,14 +50,15 @@ class AICog(commands.Cog):
             footer_parts.append(f"Tools: {', '.join(tool_names)}")
         footer_parts.append(f"Steps: {result.iterations}")
 
-        color = AGENT_COLORS.get(result.agent_name, discord.Color.blurple())
+        primary_agent = result.agent_name.split("+")[0]
+        color = AGENT_COLORS.get(primary_agent, discord.Color.blurple())
         embed = discord.Embed(description=answer, color=color)
         embed.set_footer(text=" | ".join(footer_parts))
         await ctx.respond(embed=embed)
 
 
 def setup(bot: discord.Bot) -> None:
-    """Load the AI cog and initialize the multi-agent router."""
+    """Load the AI cog and initialize the multi-agent orchestrator."""
     from openai import AsyncOpenAI
 
     import config
@@ -65,48 +66,54 @@ def setup(bot: discord.Bot) -> None:
     from agents.stock import StockAgent
     from agents.news import NewsAgent
     from agents.alerts import AlertAgent
-    from agents.router import AgentRouter
+    from agents.orchestrator import Orchestrator
+    from services.memory import MemoryManager
 
     client = AsyncOpenAI(api_key=config.OPENAI_API_KEY) if config.OPENAI_API_KEY else None
+
+    memory = MemoryManager(
+        persist_dir=config.CHROMA_PERSIST_DIR,
+        openai_api_key=config.OPENAI_API_KEY or None,
+        embedding_model=config.EMBEDDING_MODEL,
+        short_term_ttl_days=config.MEMORY_SHORT_TERM_TTL_DAYS,
+        recall_limit=config.MEMORY_RECALL_LIMIT,
+    )
 
     agents = {
         "leetcode": LeetCodeAgent(
             client=client,
+            memory=memory,
             leetcode=bot.leetcode,
             model=config.AI_MODEL,
             max_iterations=config.AGENT_MAX_ITERATIONS,
-            memory_ttl_days=config.MEMORY_TTL_DAYS,
-            memory_max_conversations=config.MEMORY_MAX_CONVERSATIONS,
         ),
         "stock": StockAgent(
             client=client,
+            memory=memory,
             stock_service=bot.stock_service,
             model=config.AI_MODEL,
             max_iterations=config.AGENT_MAX_ITERATIONS,
-            memory_ttl_days=config.MEMORY_TTL_DAYS,
-            memory_max_conversations=config.MEMORY_MAX_CONVERSATIONS,
         ),
         "news": NewsAgent(
             client=client,
+            memory=memory,
             news_service=bot.news_service,
             model=config.AI_MODEL,
             max_iterations=config.AGENT_MAX_ITERATIONS,
-            memory_ttl_days=config.MEMORY_TTL_DAYS,
-            memory_max_conversations=config.MEMORY_MAX_CONVERSATIONS,
         ),
         "alerts": AlertAgent(
             client=client,
+            memory=memory,
             alert_service=bot.alert_service,
             model=config.AI_MODEL,
             max_iterations=config.AGENT_MAX_ITERATIONS,
-            memory_ttl_days=config.MEMORY_TTL_DAYS,
-            memory_max_conversations=config.MEMORY_MAX_CONVERSATIONS,
         ),
     }
 
-    bot.agent_router = AgentRouter(
+    bot.orchestrator = Orchestrator(
         agents=agents,
         client=client,
+        memory=memory,
         model=config.AI_MODEL,
     )
     bot.add_cog(AICog(bot))

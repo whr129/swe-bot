@@ -1,1 +1,1 @@
-"""Multi-agent system with isolated agents for different domains."""
+"""Multi-agent system with orchestrated collaboration and RAG memory."""

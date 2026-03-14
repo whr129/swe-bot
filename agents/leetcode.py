@@ -1,4 +1,4 @@
-"""LeetCode specialist agent with isolated tools and memory."""
+"""LeetCode specialist agent with isolated tools and RAG memory."""
 
 from dataclasses import asdict
 from typing import Any, Optional
@@ -7,22 +7,7 @@ from openai import AsyncOpenAI
 
 from agents.base import BaseAgent
 from services.leetcode import LeetCodeService, LeetCodeAPIError
-from services.memory import AgentMemory
-
-SYSTEM_PROMPT = """\
-You are a helpful LeetCode study assistant in a Discord server.
-
-You can look up problems, search by topic, fetch daily challenges, and check user stats \
-using the tools provided. Always use tools to retrieve real data rather than guessing.
-
-Guidelines:
-- Be concise and educational. Discord messages have a 2000-char limit.
-- When listing problems, include the title, difficulty, and URL.
-- When explaining concepts, use clear examples and mention time/space complexity.
-- If the user asks about a specific problem, fetch it first with get_problem.
-- Format your response using Markdown (bold, bullet points, code blocks) for readability in Discord.
-- If you have saved preferences for this user (e.g. their LeetCode username), use them.
-"""
+from services.memory import MemoryManager
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -113,19 +98,16 @@ TOOL_DEFINITIONS: list[dict] = [
 
 class LeetCodeAgent(BaseAgent):
     name = "leetcode"
-    system_prompt = SYSTEM_PROMPT
     tool_definitions = TOOL_DEFINITIONS
 
     def __init__(
         self,
         client: Optional[AsyncOpenAI],
+        memory: MemoryManager,
         leetcode: LeetCodeService,
         model: str = "gpt-4o-mini",
         max_iterations: int = 8,
-        memory_ttl_days: int = 7,
-        memory_max_conversations: int = 50,
     ):
-        memory = AgentMemory("leetcode", ttl_days=memory_ttl_days, max_conversations=memory_max_conversations)
         super().__init__(client=client, memory=memory, model=model, max_iterations=max_iterations)
         self.leetcode = leetcode
 

@@ -1,4 +1,4 @@
-"""Personal alert/reminder specialist agent with isolated tools and memory."""
+"""Personal alert/reminder specialist agent with isolated tools and RAG memory."""
 
 from typing import Any, Optional
 
@@ -6,22 +6,7 @@ from openai import AsyncOpenAI
 
 from agents.base import BaseAgent
 from services.alerts import AlertService
-from services.memory import AgentMemory
-
-SYSTEM_PROMPT = """\
-You are a personal alert and reminder assistant in a Discord server.
-
-You can create stock price alerts and due-date reminders, list active alerts, \
-and delete alerts using the tools provided.
-
-Guidelines:
-- Be concise. Discord messages have a 2000-char limit.
-- When creating a price alert, confirm the symbol, direction (above/below), and target price.
-- When creating a reminder, confirm the message and due date/time.
-- Parse natural language dates (e.g. "next Friday", "in 3 days") into ISO format.
-- Always show the alert ID so the user can delete it later.
-- Use Markdown formatting for readability in Discord.
-"""
+from services.memory import MemoryManager
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -91,19 +76,16 @@ TOOL_DEFINITIONS: list[dict] = [
 
 class AlertAgent(BaseAgent):
     name = "alerts"
-    system_prompt = SYSTEM_PROMPT
     tool_definitions = TOOL_DEFINITIONS
 
     def __init__(
         self,
         client: Optional[AsyncOpenAI],
+        memory: MemoryManager,
         alert_service: AlertService,
         model: str = "gpt-4o-mini",
         max_iterations: int = 8,
-        memory_ttl_days: int = 7,
-        memory_max_conversations: int = 50,
     ):
-        memory = AgentMemory("alerts", ttl_days=memory_ttl_days, max_conversations=memory_max_conversations)
         super().__init__(client=client, memory=memory, model=model, max_iterations=max_iterations)
         self.alerts = alert_service
 

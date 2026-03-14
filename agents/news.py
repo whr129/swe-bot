@@ -1,4 +1,4 @@
-"""News curator specialist agent with isolated tools and memory."""
+"""News curator specialist agent with isolated tools and RAG memory."""
 
 from dataclasses import asdict
 from typing import Any, Optional
@@ -6,23 +6,8 @@ from typing import Any, Optional
 from openai import AsyncOpenAI
 
 from agents.base import BaseAgent
-from services.memory import AgentMemory
+from services.memory import MemoryManager
 from services.news import NewsService
-
-SYSTEM_PROMPT = """\
-You are a news curator assistant in a Discord server.
-
-You can fetch the latest headlines, market news, and search news by keyword \
-using the tools provided. Always use tools to retrieve real data.
-
-Guidelines:
-- Be concise. Discord messages have a 2000-char limit.
-- Present headlines as a numbered list with source attribution.
-- Include links so users can read full articles.
-- If the user has saved preferred topics, prioritize those in your responses.
-- Use Markdown formatting for readability in Discord.
-- Summarize objectively without editorializing.
-"""
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -81,19 +66,16 @@ TOOL_DEFINITIONS: list[dict] = [
 
 class NewsAgent(BaseAgent):
     name = "news"
-    system_prompt = SYSTEM_PROMPT
     tool_definitions = TOOL_DEFINITIONS
 
     def __init__(
         self,
         client: Optional[AsyncOpenAI],
+        memory: MemoryManager,
         news_service: NewsService,
         model: str = "gpt-4o-mini",
         max_iterations: int = 8,
-        memory_ttl_days: int = 7,
-        memory_max_conversations: int = 50,
     ):
-        memory = AgentMemory("news", ttl_days=memory_ttl_days, max_conversations=memory_max_conversations)
         super().__init__(client=client, memory=memory, model=model, max_iterations=max_iterations)
         self.news = news_service
 
